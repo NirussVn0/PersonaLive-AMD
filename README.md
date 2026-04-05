@@ -1,7 +1,21 @@
-# PersonaLive - AMD DirectML Edition 🔴🚀
+<div align="center">
+
+<img src="assets/header.svg" alt="PersonaLive" width="100%">
+
+<h2>PersonaLive - 🔴 AMD DirectML Edition </h2>
 
 > **Forked from the original [PersonaLive](https://github.com/GVCLab/PersonaLive).** 
 > *Expressive Portrait Image Animation for Live Streaming - Optimized & Patched for AMD GPUs (RX 6000/7000 Series) on Windows.*
+
+#### [Zhiyuan Li<sup>1,2,3</sup>](https://huai-chang.github.io/) · [Chi-Man Pun<sup>1,📪</sup>](https://cmpun.github.io/) · [Chen Fang<sup>2</sup>](http://fangchen.org/) · [Jue Wang<sup>2</sup>](https://scholar.google.com/citations?user=Bt4uDWMAAAAJ&hl=en) · [Xiaodong Cun<sup>3,📪</sup>](https://vinthony.github.io/academic/) 
+<sup>1</sup> University of Macau  &nbsp;&nbsp; <sup>2</sup> [Dzine.ai](https://www.dzine.ai/)  &nbsp;&nbsp; <sup>3</sup> [GVC Lab, Great Bay University](https://gvclab.github.io/)
+
+<a href='https://arxiv.org/abs/2512.11253'><img src='https://img.shields.io/badge/ArXiv-2512.11253-red'></a> <a href='https://huggingface.co/huaichang/PersonaLive'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-ffc107'></a> <a href='https://modelscope.cn/models/huaichang/PersonaLive'><img src='https://img.shields.io/badge/ModelScope-Model-624AFF'></a> [![GitHub](https://img.shields.io/github/stars/GVCLab/PersonaLive?style=social)](https://github.com/GVCLab/PersonaLive)
+
+<img src="assets/highlight.svg" alt="highlight" width="95%">
+
+<img src="assets/demo_3.gif" width="46%"> &nbsp;&nbsp; <img src="assets/demo_2.gif" width="40.5%">
+</div>
 
 ## 💡 What's Different in this Fork?
 The original PersonaLive heavily relies on NVIDIA's CUDA, xformers, and TensorRT. Running it natively on an AMD GPU throws multiple VRAM overflows and architecture errors. This fork applies **Surgical Patches** to run the inference pipelines via **Microsoft DirectML (`torch-directml`)**:
@@ -55,7 +69,61 @@ python inference_offline.py \
 
 ---
 
-## ⚖️ Acknowledgment & License
+## 📸 Online Inference (WebUI)
+#### 📦 Setup Web UI
+```bash
+# install Node.js 18+ (if not using web_start.sh)
+cd webcam/frontend
+npm install
+npm run build
+cd ../..
+```
+
+#### ▶️ Start Streaming
+Run the Web UI with DirectML acceleration explicitly enabled for AMD processors.
+```bash
+python inference_online.py --acceleration none
+```
+Then open `http://localhost:7860` in your browser.
+
+---
+
+## ⚖️ Disclaimer & License
+
+- This project is released for **academic research only**.
+- Users must not use this repository to generate harmful, defamatory, or illegal content.
+- The authors bear no responsibility for any misuse or legal consequences arising from the use of this tool.
+- By using this code, you agree that you are solely responsible for any content generated.
+
+**Acknowledgment:**
 This repository is a modified fork of [PersonaLive](https://github.com/GVCLab/PersonaLive). All core research, model architectures, and original codebase belong to the respective authors: Zhiyuan Li, Chi-Man Pun, Chen Fang, Jue Wang, Xiaodong Cun.
 
+**Source Code Contribution:**
+I, **NirussVn0**, have contributed to reinforcing and patching the source code to natively support **AMD Team Red (DirectML)** architecture, solving significant VRAM constraints entirely on local consumer hardware.
+
 This project is licensed under the **Apache License 2.0**. See the `LICENSE` file for more details.
+
+---
+
+## 🎬 More Results & Original Visualizations
+<table width="100%">
+  <tr>
+    <td width="50%">
+      <video src="https://github.com/user-attachments/assets/cdc885ef-5e1c-4139-987a-2fa50fefd6a4" controls="controls" style="max-width: 100%; display: block;"></video>
+    </td>
+    <td width="50%">
+      <video src="https://github.com/user-attachments/assets/014f7bae-74ce-4f56-8621-24bc76f3c123" controls="controls" style="max-width: 100%; display: block;"></video>
+    </td>
+  </tr>
+</table>
+
+## ⭐ Citation
+If you find PersonaLive useful for your research, welcome to cite our work using the following BibTeX:
+```bibtex
+@article{li2025personalive,
+  title={PersonaLive! Expressive Portrait Image Animation for Live Streaming},
+  author={Li, Zhiyuan and Pun, Chi-Man and Fang, Chen and Wang, Jue and Cun, Xiaodong},
+  journal={arXiv preprint arXiv:2512.11253},
+  year={2025}
+}
+```
