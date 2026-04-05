@@ -1,10 +1,7 @@
-# Bỏ qua Model Weights (Cực nặng, để user tự tải)
 pretrained_weights/
 
-# Bỏ qua Video/Ảnh kết quả
 results/
 
-# Bỏ qua môi trường ảo và rác Python
 __pycache__/
 *.pyc
 .env
@@ -12,6 +9,5 @@ venv/
 miniconda3/
 .conda/
 
-# Bỏ qua rác Frontend (Nếu cậu chạy build Svelte)
 webcam/frontend/node_modules/
 webcam/frontend/build/
