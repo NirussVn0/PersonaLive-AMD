@@ -291,7 +291,13 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, signal_handler)
     mp.set_start_method("spawn", force=True)
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    try:
+        import torch_directml
+        device = torch_directml.device()
+        print(f"DirectML active! Using device: {device}")
+    except ImportError:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    
     if config.acceleration == "tensorrt":
         from webcam.vid2vid_trt import Pipeline
     else:

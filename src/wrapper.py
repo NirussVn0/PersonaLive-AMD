@@ -138,9 +138,9 @@ class PersonaLive:
         torch.cuda.empty_cache()
 
         try:
-            self.enable_xformers_memory_efficient_attention()
+            self.enable_attention_slicing()
         except Exception as e:
-            print("Failed to enable xformers:", e)
+            print("Failed to enable Attention Slicing:", e)
     
     def reset(self):
         self.first_frame = True
@@ -153,9 +153,9 @@ class PersonaLive:
         self.reference_control_writer.clear()
         self.reference_control_reader.clear()
 
-    def enable_xformers_memory_efficient_attention(self):
-        self.reference_unet.enable_xformers_memory_efficient_attention()
-        self.denoising_unet.enable_xformers_memory_efficient_attention()
+    def enable_attention_slicing(self):
+        self.reference_unet.enable_attention_slicing(1)
+        self.denoising_unet.enable_attention_slicing(1)
 
     def fast_resize(self, images, target_width, target_height) -> torch.Tensor:
         tgt_cond_tensor = F.interpolate(
@@ -259,7 +259,10 @@ class PersonaLive:
         A_flat = A.view(A.size(1), -1).clone()
         B_flat = B.view(B.size(1), -1).clone()
 
-        dist = torch.cdist(B_flat.to(torch.float32), A_flat.to(torch.float32), p=2)
+        A_f32 = A_flat.to(torch.float32)
+        B_f32 = B_flat.to(torch.float32)
+        diff = B_f32.unsqueeze(1) - A_f32.unsqueeze(0)
+        dist = torch.norm(diff, p=2, dim=-1)
 
         min_dist, min_idx = dist.min(dim=1)  # (f2,)
 

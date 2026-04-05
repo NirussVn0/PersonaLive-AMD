@@ -386,10 +386,13 @@ class LayerNorm(nn.Module):
                 else:
                     new_data = fn(param.data)
 
-                param.data = new_data
+                # DirectML fix: Don't mutate .data directly, overwrite _parameters
+                with torch.no_grad():
+                    new_param = nn.Parameter(new_data, requires_grad=param.requires_grad)
+                    self._parameters[name] = new_param
                 
                 if param.grad is not None:
-                    param.grad.data = param.grad.data.to(device=new_data.device, dtype=new_data.dtype)
+                    new_param.grad = param.grad.to(device=new_data.device, dtype=new_data.dtype)
 
         for name, buf in self._buffers.items():
             if buf is not None:

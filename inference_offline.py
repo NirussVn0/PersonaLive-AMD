@@ -44,8 +44,14 @@ def parse_args():
     return args
 
 def main(args):
-    device = args.device
+    # --- FIX CHO AMD DIRECTML ---
+    if "privateuseone" in args.device:
+        import torch_directml
+        device = torch_directml.device()
+    else:
+        device = args.device
     print('device', device)
+    # ----------------------------
     config = OmegaConf.load(args.config)
 
     if config.weight_dtype == "fp16":
@@ -53,29 +59,31 @@ def main(args):
     else:
         weight_dtype = torch.float32
 
-    vae = AutoencoderKL.from_pretrained(config.vae_path).to(device, dtype=weight_dtype)
+    vae = AutoencoderKL.from_pretrained(config.vae_path, torch_dtype=weight_dtype).to(device)
     # if use tiny VAE
-    # vae_tiny = AutoencoderTiny.from_pretrained(config.vae_tiny_path).to(device, dtype=weight_dtype)
+    # vae_tiny = AutoencoderTiny.from_pretrained(config.vae_tiny_path, torch_dtype=weight_dtype).to(device)
 
     infer_config = OmegaConf.load(config.inference_config)
     reference_unet = UNet2DConditionModel.from_pretrained(
         config.pretrained_base_model_path,
         subfolder="unet",
-    ).to(device=device, dtype=weight_dtype)
+        torch_dtype=weight_dtype,
+    ).to(device=device)
     denoising_unet = UNet3DConditionModel.from_pretrained_2d(
         config.pretrained_base_model_path,
         "",
         subfolder="unet",
         unet_additional_kwargs=infer_config.unet_additional_kwargs,
-    ).to(dtype=weight_dtype, device=device)
+    ).to(device=device, dtype=weight_dtype)
 
     motion_encoder = MotEncoder().to(dtype=weight_dtype, device=device).eval()
     pose_guider = PoseGuider().to(device=device, dtype=weight_dtype)
     pose_encoder = MotionExtractor(num_kp=21).to(device=device, dtype=weight_dtype).eval()
     
     image_enc = CLIPVisionModelWithProjection.from_pretrained(
-        config.image_encoder_path
-    ).to(dtype=weight_dtype, device=device)
+        config.image_encoder_path,
+        torch_dtype=weight_dtype,
+    ).to(device=device)
 
     sched_kwargs = OmegaConf.to_container(
         OmegaConf.load(config.inference_config).noise_scheduler_kwargs
@@ -87,44 +95,48 @@ def main(args):
 
     # load pretrained weights
     denoising_unet.load_state_dict(
-        torch.load(config.denoising_unet_path, map_location="cpu"), strict=False
+        torch.load(config.denoising_unet_path, map_location="cpu", weights_only=True), strict=False
     )
     reference_unet.load_state_dict(
         torch.load(
             config.denoising_unet_path.replace('denoising_unet', 'reference_unet'),
-            map_location="cpu",
+            map_location="cpu", weights_only=True,
         ),
         strict=True,
     )
     motion_encoder.load_state_dict(
         torch.load(
             config.denoising_unet_path.replace('denoising_unet', 'motion_encoder'),
-            map_location="cpu",
+            map_location="cpu", weights_only=True,
         ),
         strict=True,
     )
     pose_guider.load_state_dict(
         torch.load(
             config.denoising_unet_path.replace('denoising_unet', 'pose_guider'),
-            map_location="cpu",
+            map_location="cpu", weights_only=True,
         ),
         strict=True,
     )
     denoising_unet.load_state_dict(
         torch.load(
             config.denoising_unet_path.replace('denoising_unet', 'temporal_module'),
-            map_location="cpu",
+            map_location="cpu", weights_only=True,
         ),
         strict=False,
     )
     pose_encoder.load_state_dict(
         torch.load(
             config.denoising_unet_path.replace('denoising_unet', 'motion_extractor'),
-            map_location="cpu",
+            map_location="cpu", weights_only=True,
         ),
         strict=False,
     )
     
+    if "privateuseone" in args.device:
+        args.use_xformers = False
+
+
     if args.use_xformers:
         if is_xformers_available(): 
             try:
@@ -155,6 +167,25 @@ def main(args):
         scheduler=scheduler,
     )
     pipe = pipe.to(device)
+    pipe.enable_attention_slicing()
+
+    # --- AMD RX6800 VRAM OPTIMIZATIONS ---
+    try:
+        pipe.vae.enable_slicing()
+    except Exception as e: pass
+    
+    try:
+        pipe.vae.enable_tiling()
+    except Exception as e: pass
+    
+    if "privateuseone" in args.device:
+        try:
+            pipe.enable_model_cpu_offload()
+            print("Successfully enabled CPU Model Offload for Pipeline.")
+        except Exception as e:
+            print("Model offload fallback triggered:", e)
+            print("Attempting to manually clear memory loop leaks...")
+    # ------------------------------------
 
     date_str = datetime.now().strftime("%Y%m%d")
     if args.name is None:
@@ -204,7 +235,12 @@ def main(args):
             ref_face_pil = Image.fromarray(ref_patch).convert("RGB")
 
             size = args.H
-            generator = torch.Generator(device=device)
+            # --- FIX AMD DIRECTML ---
+            try:
+                generator = torch.Generator(device=device)
+            except Exception:
+                generator = torch.Generator(device='cpu')
+            # ----------------------------
             generator.manual_seed(42)
 
             dri_faces = []

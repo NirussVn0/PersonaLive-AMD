@@ -416,6 +416,7 @@ class DDIMScheduler(SchedulerMixin, ConfigMixin):
 
         # 2. compute alphas, betas
         alpha_prod_t = self.alphas_cumprod[timestep]
+        self.final_alpha_cumprod = self.final_alpha_cumprod.to(self.alphas_cumprod.device)
         if isinstance(prev_timestep, torch.Tensor):
             alpha_prod_t = alpha_prod_t.view(-1, 1, 1, 1)
             prev_timestep = prev_timestep.to(self.alphas_cumprod.device)

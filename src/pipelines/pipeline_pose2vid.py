@@ -420,7 +420,10 @@ class Pose2VideoPipeline(DiffusionPipeline):
         A_flat = A.view(A.size(1), -1).clone()
         B_flat = B.view(B.size(1), -1).clone()
 
-        dist = torch.cdist(B_flat.to(torch.float32), A_flat.to(torch.float32), p=2)
+        A_f32 = A_flat.to(torch.float32)
+        B_f32 = B_flat.to(torch.float32)
+        diff = B_f32.unsqueeze(1) - A_f32.unsqueeze(0)
+        dist = torch.norm(diff, p=2, dim=-1)
 
         min_dist, min_idx = dist.min(dim=1)  # (f2,)
 
@@ -524,12 +527,12 @@ class Pose2VideoPipeline(DiffusionPipeline):
         # initialize latents
         padding_num = (temporal_adaptive_step - 1) * temporal_window_size
         noisy_latents_first = []
-        init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
+        init_latents = ref_image_latents.to("cpu").unsqueeze(2).repeat(1, 1, padding_num, 1, 1).to(device)
         init_timesteps = reversed(timesteps[0::jump]).repeat_interleave(temporal_window_size, dim=0)
         noise = torch.randn_like(init_latents)
         noisy_latents_first.append(self.scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num]))
         
-        repeated_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, video_length+padding_num, 1, 1)
+        repeated_latents = ref_image_latents.to("cpu").unsqueeze(2).repeat(1, 1, video_length+padding_num, 1, 1).to(device)
         noise = torch.randn_like(repeated_latents)
         noisy_latents_first.append(self.scheduler.add_noise(repeated_latents, noise, timesteps[:1]))
         latents = torch.cat(noisy_latents_first, dim=2)
@@ -584,7 +587,7 @@ class Pose2VideoPipeline(DiffusionPipeline):
         
         init_motion_hidden_states = self.interpolate_tensors(neg_motion_hidden_states, motion_hidden_states[:,:1], num=padding_num+1)[:,:-1]
         motion_hidden_states = torch.cat([init_motion_hidden_states, motion_hidden_states, motion_hidden_states[:,-1:].repeat(1, padding_num, 1, 1)], dim=1)
-        pose_feas = torch.cat([pose_feas, pose_feas[:,:,-1:].repeat(1,1,padding_num,1,1)], dim=2)
+        pose_feas = torch.cat([pose_feas, pose_feas[:,:,-1:].to("cpu").repeat(1,1,padding_num,1,1).to(device)], dim=2)
 
         motion_bank = neg_motion_hidden_states
 
@@ -832,7 +835,7 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
 
         # initialize latents [1,4,12,64,64]
         padding_num = (temporal_adaptive_step - 1) * temporal_window_size
-        init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
+        init_latents = ref_image_latents.to("cpu").unsqueeze(2).repeat(1, 1, padding_num, 1, 1).to(device)
         init_timesteps = reversed(timesteps[0::jump]).repeat_interleave(temporal_window_size, dim=0)
         noise = torch.randn_like(init_latents)
         noise_latents = self.scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num])
@@ -898,7 +901,7 @@ class Pose2VideoPipeline_Stream(Pose2VideoPipeline):
                 if l > temporal_adaptive_step * temporal_window_size * 2 and motion_bank.shape[1] < 4:
                     add_flag, motion_bank = self.calculate_dis(motion_bank, motion_hidden_state, threshold=17.)
                 
-                latents = ref_image_latents.unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1)
+                latents = ref_image_latents.to("cpu").unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1).to(device)
                 noise = torch.randn_like(latents)
                 latents = self.scheduler.add_noise(latents, noise, timesteps[:1])
 
