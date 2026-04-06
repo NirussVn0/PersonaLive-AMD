@@ -19,35 +19,19 @@
 
 ## 💡 What's Different in this Fork?
 
-This fork replaces the original NVIDIA CUDA + TensorRT pipeline with a **native AMD HIP/ZLUDA backend**, running on AMD GPUs at full hardware utilization through PyTorch's native SDPA (Scaled Dot-Product Attention).
+This fork replaces the original NVIDIA CUDA + TensorRT pipeline with a **native AMD HIP/ZLUDA backend**, enabling full hardware-accelerated inference on AMD GPUs through ZLUDA's CUDA→HIP translation layer.
 
-### Migration History
-
-This project has gone through two AMD backend iterations:
-
-| Version | Backend | Status |
-|---------|---------|--------|
-| v1 | `torch-directml` (Direct3D 12) | Deprecated |
-| **v2** | **AMD HIP SDK + ZLUDA** | **Current** |
-
-### Architecture Changes (v2 — HIP/ZLUDA)
-
-| # | Change | Before (DirectML v1) | After (HIP/ZLUDA v2) |
-|---|--------|---------------------|----------------------|
-| 1 | **HIPAttnProcessor** | `DMLAttnProcessor` — manual sliced attention, fp32 upcast, 256-token chunks | Native `F.scaled_dot_product_attention()` — single kernel dispatch, full fp16 |
-| 2 | **Device Backend** | `torch-directml` → `privateuseone:0` | `torch.cuda` via ZLUDA → `cuda:0` |
-| 3 | **Attention Overhead** | ~15-30% from fp32 upcast per layer | Near-zero dtype conversion |
-| 4 | **VRAM Management** | Manual DML workarounds, partial VAE optimization | Full VAE slicing + tiling, aggressive `gc.collect()` + `empty_cache()` |
-| 5 | **Peak VRAM (512x512)** | ~12-14GB | ~8-10GB |
-| 6 | **xformers** | Disabled (incompatible with DML) | Replaced by native PyTorch SDPA |
-
-### Preserved Architecture (from v1)
+### Key Features
 
 | # | Feature | Description |
 |---|---------|-------------|
-| 7 | **Threading over Multiprocessing** | Single thread shares model instance, zero serialization overhead |
-| 8 | **Lazy Loading UX** | Server starts instantly, frontend shows loading screen |
-| 9 | **JIT Warmup** | Automatic VAE warmup pass pre-compiles HIP kernels before first frame |
+| 1 | **HIPAttnProcessor** | Native `F.scaled_dot_product_attention()` — single kernel dispatch, full FP16 precision, zero manual slicing |
+| 2 | **ZLUDA Backend** | AMD GPU exposed as `cuda:0` — seamless PyTorch CUDA API compatibility without code changes |
+| 3 | **~8-10GB Peak VRAM** | VAE slicing + tiling + aggressive memory management keeps 512×512 inference well within 16GB |
+| 4 | **Threading Architecture** | Single-thread model sharing, zero serialization — no redundant model loading or pickle overhead |
+| 5 | **Lazy Loading UX** | Server starts instantly, frontend shows loading screen while models warm up in background |
+| 6 | **HIP JIT Warmup** | Automatic VAE warmup pass pre-compiles HIP kernels before first user frame — eliminates cold-start stutter |
+| 7 | **One-Click Launcher** | `run_online.ps1` handles HIP env vars, conda activation, port detection, and browser auto-open |
 
 ---
 
@@ -129,24 +113,24 @@ Open `http://localhost:7860` — the UI loads instantly while models warm up in 
 
 Every attention layer in the diffusion UNet computes: **Q @ Kᵀ × scale → softmax → @ V**.
 
-The `HIPAttnProcessor` uses PyTorch 2.x's native `F.scaled_dot_product_attention()` which dispatches to the most efficient kernel available on the hardware:
+The `HIPAttnProcessor` uses PyTorch 2.x `F.scaled_dot_product_attention()` which dispatches to the most efficient kernel available:
 
-| Backend | Kernel | Performance |
-|---------|--------|-------------|
-| HIP/ROCm | Flash Attention (via MIOpen) | Optimal for RDNA2 |
-| CUDA | Flash Attention v2 | Optimal for Ampere+ |
-| Fallback | Math-based SDPA | Universal, still fast |
+| Backend | Kernel | Notes |
+|---------|--------|-------|
+| HIP/ROCm | Flash Attention (via MIOpen) | Optimal for RDNA2/RDNA3 |
+| CUDA | Flash Attention v2 | For NVIDIA fallback |
+| Fallback | Math-based SDPA | Universal compatibility |
 
-This replaces the old `DMLAttnProcessor` which used manual slicing and fp32 upcasting — a workaround that is no longer necessary with proper GPU backend support.
+Full FP16 precision throughout — no dtype upcasting overhead. Single kernel dispatch per attention layer instead of chunked loops.
 
 ### Threading Architecture
 
 ```
-┌─── This Fork (threading) ───────────────────────────────────────┐
-│ Main Thread: PersonaLive init once → start server → 30-45s      │
-│ Worker Thread: shares same instance, zero serialization         │
-│ Communication: queue.Queue (direct memory reference)            │
-└─────────────────────────────────────────────────────────────────┘
+┌─── PersonaLive Threading Model ────────────────────────────────┐
+│ Main Thread: PersonaLive init once → start server → 30-45s     │
+│ Worker Thread: shares same instance, zero serialization        │
+│ Communication: queue.Queue (direct memory reference)           │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 PyTorch GPU operations **release the GIL** during kernel execution. The inference thread runs GPU-bound work (matmul, conv2d, etc.) without blocking the WebSocket I/O thread.
@@ -161,18 +145,29 @@ t=35s   HIP kernels pre-compiled               → { is_ready: true, status: "Re
         Frontend transitions to app UI         → User selects portrait, starts streaming
 ```
 
+### VRAM Management Strategy
+
+| Optimization | Effect |
+|-------------|--------|
+| VAE Slicing | Processes VAE decode in sequential slices instead of full batch |
+| VAE Tiling | Tiles large images to avoid OOM on high resolutions |
+| `flush_vram()` | `gc.collect()` + `torch.cuda.empty_cache()` after every model load |
+| FP16 Pipeline | Full half-precision inference — no FP32 intermediate buffers |
+| `PYTORCH_HIP_ALLOC_CONF` | Tuned garbage collection threshold (0.9) and max split size (512MB) |
+
 ---
 
-## ⚙️ AMD HIP/ZLUDA vs NVIDIA CUDA — Technical Comparison
+## ⚙️ Supported AMD GPUs
 
-| Feature | NVIDIA (CUDA) | AMD (HIP/ZLUDA) |
-|---------|---------------|-----------------|
-| Tensor execution | Native GPU | Native GPU |
-| Attention precision | FP16 (Flash Attention) | FP16 (SDPA via MIOpen) |
-| Kernel optimization | TensorRT (fused ops) | HIP JIT compilation |
-| JIT compilation | Pre-compiled CUDA kernels | First-run HIP kernel compilation (warmup handles this) |
-| GPU utilization | 100% | 100% |
-| VRAM efficiency | Native memory pool | Native memory pool + slicing/tiling |
+| GPU | gfx ID | HSA_OVERRIDE_GFX_VERSION | VRAM |
+|-----|--------|--------------------------|------|
+| RX 6600/XT | gfx1032 | 10.3.0 | 8GB |
+| RX 6700 XT | gfx1031 | 10.3.0 | 12GB |
+| RX 6800/XT | gfx1030 | 10.3.0 | 16GB |
+| RX 6900 XT | gfx1030 | 10.3.0 | 16GB |
+| RX 7600 | gfx1102 | 11.0.0 | 8GB |
+| RX 7800 XT | gfx1101 | 11.0.0 | 16GB |
+| RX 7900 XT/XTX | gfx1100 | 11.0.0 | 20/24GB |
 
 ---
 
@@ -187,7 +182,7 @@ t=35s   HIP kernels pre-compiled               → { is_ready: true, status: "Re
 This repository is a modified fork of [PersonaLive](https://github.com/GVCLab/PersonaLive). All core research, model architectures, and original codebase belong to the respective authors: Zhiyuan Li, Chi-Man Pun, Chen Fang, Jue Wang, Xiaodong Cun.
 
 **Source Code Contribution:**
-**[NirussVn0](https://github.com/NirussVn0)** — AMD DirectML runtime engine (v1), HIP/ZLUDA migration (v2), custom attention processors, threading architecture, lazy loading system, and JIT warmup implementation.
+**[NirussVn0](https://github.com/NirussVn0)** — AMD HIP/ZLUDA runtime engine, HIPAttnProcessor, threading architecture, lazy loading system, JIT warmup, and one-click launcher.
 
 This project is licensed under the **Apache License 2.0**. See the `LICENSE` file for more details.
 
