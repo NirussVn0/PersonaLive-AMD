@@ -55,7 +55,7 @@ function Test-ZludaDlls {
     $pythonDir = Split-Path -Parent $pythonPath
     $zludaPaths = @(
         (Join-Path $pythonDir "nvcuda.dll"),
-        (Join-Path $pythonDir "Lib" "site-packages" "zluda" "nvcuda.dll")
+        (Join-Path (Join-Path (Join-Path (Join-Path $pythonDir "Lib") "site-packages") "zluda") "nvcuda.dll")
     )
 
     foreach ($path in $zludaPaths) {
