@@ -1,6 +1,10 @@
 from omegaconf import OmegaConf
 import os
 import torch
+try:
+    import torch_directml
+except ImportError:
+    pass
 import numpy as np
 from PIL import Image
 import time
@@ -22,6 +26,70 @@ from torchvision import transforms as T
 from einops import rearrange
 from src.utils.util import draw_keypoints, get_boxes
 import torch.nn.functional as F
+
+
+class DMLAttnProcessor:
+    def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, temb=None, *args, **kwargs):
+        residual = hidden_states
+
+        if attn.spatial_norm is not None:
+            hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        input_ndim = hidden_states.ndim
+        if input_ndim == 4:
+            batch_size, channel, height, width = hidden_states.shape
+            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
+
+        batch_size, sequence_length, _ = (
+            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+        )
+
+        if attention_mask is not None:
+            attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+        query = attn.to_q(hidden_states)
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
+
+        query = attn.head_to_batch_dim(query)
+        key = attn.head_to_batch_dim(key)
+        value = attn.head_to_batch_dim(value)
+
+        inner_dtype = query.dtype
+        attention_scores = torch.matmul(
+            query.float(), key.float().transpose(-1, -2).contiguous()
+        ) * attn.scale
+
+        if attention_mask is not None:
+            attention_scores = attention_scores + attention_mask.float()
+
+        attention_probs = attention_scores.softmax(dim=-1).to(inner_dtype)
+
+        hidden_states = torch.matmul(attention_probs, value)
+        hidden_states = attn.batch_to_head_dim(hidden_states)
+
+        hidden_states = attn.to_out[0](hidden_states)
+        hidden_states = attn.to_out[1](hidden_states)
+
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+
+        return hidden_states
+
 
 def map_device(device_or_str):
     return device_or_str if isinstance(device_or_str, torch.device) else torch.device(device_or_str)
@@ -93,6 +161,11 @@ class PersonaLive:
             strict=False,
         )
 
+        is_dml = "privateuseone" in str(self.device)
+        if is_dml:
+            self.denoising_unet.set_attn_processor(DMLAttnProcessor())
+            self.reference_unet.set_attn_processor(DMLAttnProcessor())
+
         self.reference_control_writer = ReferenceAttentionControl(
             self.reference_unet,
             do_classifier_free_guidance=False,
@@ -135,7 +208,8 @@ class PersonaLive:
         
         self.cfg = cfg
         self.reset()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         try:
             self.enable_attention_slicing()
@@ -200,7 +274,7 @@ class PersonaLive:
         self.ref_image_latents = ref_image_latents
 
         padding_num = (self.temporal_adaptive_step - 1) * self.temporal_window_size
-        init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
+        init_latents = ref_image_latents.to("cpu").unsqueeze(2).repeat(1, 1, padding_num, 1, 1).to(self.device)
         noise = torch.randn_like(init_latents)
         init_timesteps = reversed(self.timesteps).repeat_interleave(self.temporal_window_size, dim=0)
         noisy_latents_first = self.scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num])
@@ -295,7 +369,7 @@ class PersonaLive:
 
         keypoints = draw_keypoints(mot_bbox_param, device=device)
         boxes = get_boxes(kps_dri)
-        keypoints = rearrange(keypoints.unsqueeze(2), 'f c b h w -> b c f h w')
+        keypoints = rearrange(keypoints.to("cpu").unsqueeze(2), 'f c b h w -> b c f h w')
         keypoints = keypoints.to(device=device, dtype=self.pose_guider.dtype)
 
         if self.first_frame:
@@ -340,7 +414,7 @@ class PersonaLive:
         else:
             self.pose_pile.append(pose_fea)
 
-        latents = self.ref_image_latents.unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1)
+        latents = self.ref_image_latents.to("cpu").unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1).to(self.device)
         noise = torch.randn_like(latents)
         latents = self.scheduler.add_noise(latents, noise, self.timesteps[:1])
         self.latents_pile.append(latents)
