@@ -10,13 +10,16 @@ sys.path.append(
 from threading import Thread, Event
 
 import time
+import logging
 from typing import List
 import torch
 from .config import Args
 from pydantic import BaseModel, Field
 from PIL import Image
-from src.wrapper import PersonaLive
+from src.wrapper import PersonaLive, flush_vram
 import queue
+
+logger = logging.getLogger(__name__)
 
 page_content = """<h1 class="text-3xl font-bold">🎭 PersonaLive!</h1>
 <p class="text-sm">
@@ -64,26 +67,26 @@ class Pipeline:
         self.thread = Thread(target=self._load_and_run, daemon=True)
         self.thread.start()
 
-    def _load_and_run(self):
+    def _load_and_run(self) -> None:
         torch.set_grad_enabled(False)
 
         self.loading_status = "Loading models..."
-        print("[Pipeline] Loading models...")
+        logger.info("Loading models...")
         load_start = time.time()
         self.pipeline = PersonaLive(self.args, self.device)
-        print(f"[Pipeline] Models loaded in {time.time() - load_start:.1f}s")
+        logger.info("Models loaded in %.1fs", time.time() - load_start)
 
-        self.loading_status = "Warming up DirectML..."
-        print("[Pipeline] Warming up DirectML JIT compiler...")
-        self._warmup_dml()
+        self.loading_status = "Warming up HIP/ZLUDA..."
+        logger.info("Warming up HIP/ZLUDA JIT compiler...")
+        self._warmup_hip()
 
         self.loading_status = "Ready"
         self.is_ready = True
-        print("[Pipeline] Ready! Waiting for reference image...")
+        logger.info("Ready! Waiting for reference image...")
 
         self._generate_loop()
 
-    def _warmup_dml(self):
+    def _warmup_hip(self) -> None:
         warmup_start = time.time()
         try:
             with torch.no_grad():
@@ -95,16 +98,17 @@ class Pipeline:
                 latent = self.pipeline.vae.encode(dummy).latent_dist.mean
                 self.pipeline.vae.decode(latent)
                 del dummy, latent
-            print(f"[Pipeline] DML warmup done in {time.time() - warmup_start:.1f}s")
+                flush_vram()
+            logger.info("HIP warmup done in %.1fs", time.time() - warmup_start)
         except Exception as e:
-            print(f"[Pipeline] DML warmup skipped: {e}")
+            logger.warning("HIP warmup skipped: %s", e)
 
-    def _generate_loop(self):
+    def _generate_loop(self) -> None:
         chunk_size = 4
 
         reference_img = self.reference_queue.get()
         self.pipeline.fuse_reference(reference_img)
-        print("[Pipeline] Fuse reference done, starting inference loop")
+        logger.info("Fuse reference done, starting inference loop")
 
         while not self.stop_event.is_set():
             if self.restart_event.is_set():
@@ -119,10 +123,10 @@ class Pipeline:
                 self.pipeline.reset()
                 self._clear_queue(self.input_queue)
                 self._clear_queue(self.reference_queue)
-                print("[Pipeline] Waiting for new reference image...")
+                logger.info("Waiting for new reference image...")
                 reference_img = self.reference_queue.get()
                 self.pipeline.fuse_reference(reference_img)
-                print("[Pipeline] Fuse reference done")
+                logger.info("Fuse reference done")
                 self.reset_event.clear()
                 continue
 
@@ -132,7 +136,7 @@ class Pipeline:
             for image in video:
                 self.output_queue.put(image)
 
-    def _read_images(self, num_needed):
+    def _read_images(self, num_needed: int) -> list:
         collected = []
         while len(collected) < num_needed:
             if self.stop_event.is_set() or self.reset_event.is_set():
@@ -143,11 +147,11 @@ class Pipeline:
                 continue
         return collected
 
-    def reset(self):
+    def reset(self) -> None:
         self.reset_event.set()
         self._clear_queue(self.output_queue)
 
-    def accept_new_params(self, params: "Pipeline.InputParams"):
+    def accept_new_params(self, params: "Pipeline.InputParams") -> None:
         if hasattr(params, "image"):
             image_pil = params.image.to(self.device).float() / 255.0
             image_pil = image_pil * 2.0 - 1.0
@@ -158,7 +162,7 @@ class Pipeline:
             self.restart_event.set()
             self._clear_queue(self.output_queue)
 
-    def fuse_reference(self, ref_image):
+    def fuse_reference(self, ref_image: Image.Image) -> None:
         self.reference_queue.put(ref_image)
 
     def produce_outputs(self) -> List[Image.Image]:
@@ -172,14 +176,14 @@ class Pipeline:
             pass
         return results
 
-    def close(self):
-        print("[Pipeline] Shutting down...")
+    def close(self) -> None:
+        logger.info("Shutting down...")
         self.stop_event.set()
         self.thread.join(timeout=3.0)
-        print("[Pipeline] Closed")
+        logger.info("Closed")
 
     @staticmethod
-    def _clear_queue(q):
+    def _clear_queue(q: queue.Queue) -> None:
         try:
             while True:
                 q.get_nowait()
