@@ -116,39 +116,31 @@ function Set-HipEnvironment {
 function Activate-CondaEnvironment {
     param([string]$EnvName)
 
-    $condaPath = $null
     $condaCmd = Get-Command conda -ErrorAction SilentlyContinue
     if ($null -ne $condaCmd) {
-        $condaPath = $condaCmd.Source
+        conda activate $EnvName 2>$null
+        Write-Status "Conda environment '$EnvName' activated" "Green"
+        return
     }
 
-    if ([string]::IsNullOrEmpty($condaPath)) {
-        $condaPaths = @(
-            "$env:USERPROFILE\miniconda3\Scripts\conda.exe",
-            "$env:USERPROFILE\anaconda3\Scripts\conda.exe",
-            "C:\ProgramData\miniconda3\Scripts\conda.exe",
-            "C:\ProgramData\anaconda3\Scripts\conda.exe"
-        )
-        foreach ($path in $condaPaths) {
-            if (Test-Path $path) {
-                $condaPath = $path
-                break
-            }
-        }
-    }
-
-    if (-not [string]::IsNullOrEmpty($condaPath)) {
-        $scriptsDir = Split-Path -Parent $condaPath
-        $condaRoot = Split-Path -Parent $scriptsDir
-        if (-not [string]::IsNullOrEmpty($condaRoot)) {
+    $condaPaths = @(
+        "$env:USERPROFILE\miniconda3\Scripts\conda.exe",
+        "$env:USERPROFILE\anaconda3\Scripts\conda.exe",
+        "C:\ProgramData\miniconda3\Scripts\conda.exe",
+        "C:\ProgramData\anaconda3\Scripts\conda.exe"
+    )
+    foreach ($path in $condaPaths) {
+        if (Test-Path $path) {
+            $scriptsDir = Split-Path -Parent $path
+            $condaRoot = Split-Path -Parent $scriptsDir
             $hookScript = Join-Path (Join-Path (Join-Path $condaRoot "shell") "condabin") "conda-hook.ps1"
             if (Test-Path $hookScript) {
                 & $hookScript
             }
+            conda activate $EnvName 2>$null
+            Write-Status "Conda environment '$EnvName' activated" "Green"
+            return
         }
-        conda activate $EnvName 2>$null
-        Write-Status "Conda environment '$EnvName' activated" "Green"
-        return
     }
 
     $venvPath = Join-Path (Join-Path (Join-Path $ScriptRoot "venv") "Scripts") "Activate.ps1"
