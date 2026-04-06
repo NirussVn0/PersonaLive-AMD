@@ -11,3 +11,10 @@ weight_dtype: 'fp16'
 test_cases:
   'demo/ref_image.png':
   - 'demo/driving_video.mp4'
+
+hip_optimizations:
+  enable_flash_attention: true
+  enable_vae_slicing: true
+  enable_vae_tiling: true
+  gfx_version: "10.3.0"
+  pytorch_alloc_conf: "garbage_collection_threshold:0.9,max_split_size_mb:512"
