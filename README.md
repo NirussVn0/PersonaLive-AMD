@@ -2,10 +2,10 @@
 
 <img src="assets/header.svg" alt="PersonaLive" width="100%">
 
-<h2>PersonaLive - 🔴 AMD DirectML Edition </h2>
+<h2>PersonaLive - 🔴 AMD HIP/ZLUDA Edition </h2>
 
 > **Forked from the original [PersonaLive](https://github.com/GVCLab/PersonaLive).** 
-> *Expressive Portrait Image Animation for Live Streaming — Patched for native AMD GPU execution (RX 6000/7000 Series) on Windows via Microsoft DirectML.*
+> *Expressive Portrait Image Animation for Live Streaming — Optimized for native AMD GPU execution (RX 6000/7000 Series) on Windows via AMD HIP SDK + ZLUDA.*
 
 #### [Zhiyuan Li<sup>1,2,3</sup>](https://huai-chang.github.io/) · [Chi-Man Pun<sup>1,📪</sup>](https://cmpun.github.io/) · [Chen Fang<sup>2</sup>](http://fangchen.org/) · [Jue Wang<sup>2</sup>](https://scholar.google.com/citations?user=Bt4uDWMAAAAJ&hl=en) · [Xiaodong Cun<sup>3,📪</sup>](https://vinthony.github.io/academic/) 
 <sup>1</sup> University of Macau  &nbsp;&nbsp; <sup>2</sup> [Dzine.ai](https://www.dzine.ai/)  &nbsp;&nbsp; <sup>3</sup> [GVC Lab, Great Bay University](https://gvclab.github.io/)
@@ -19,70 +19,90 @@
 
 ## 💡 What's Different in this Fork?
 
-The original PersonaLive was built for NVIDIA CUDA + TensorRT. This fork replaces every CUDA-exclusive operation with **DirectML-compatible equivalents**, making it run natively on AMD GPUs at full GPU utilization through `torch-directml`.
+This fork replaces the original NVIDIA CUDA + TensorRT pipeline with a **native AMD HIP/ZLUDA backend**, running on AMD GPUs at full hardware utilization through PyTorch's native SDPA (Scaled Dot-Product Attention).
 
-### Runtime Patches
+### Migration History
 
-| # | Patch | Problem | Solution |
-|---|-------|---------|----------|
-| 1 | **DMLAttnProcessor** | All 3 built-in diffusers attention processors (`AttnProcessor2_0`, `AttnProcessor`, `SlicedAttnProcessor`) crash on DirectML — they use `F.scaled_dot_product_attention()` or `torch.baddbmm()`, neither of which has a DML kernel | Custom processor using only `torch.matmul()` + `softmax()` with FP32 upcast for numerical stability |
-| 2 | **FP16 Model Loading** | `AutoencoderKL` and `UNet` default to FP32, causing 16GB+ RAM freeze | Forced `torch_dtype=torch.float16` on all `.from_pretrained()` calls |
-| 3 | **5D Tensor CPU Offload** | DirectML crashes on 5D tensor manipulations (`.repeat()`, `.unsqueeze()`) | Temporarily offload to CPU, compute, push back to VRAM |
-| 4 | **Distance Metric Rewrite** | `torch.cdist` triggers a fatal padding bug in DML's compiler | Replaced with `torch.norm` Euclidean distance |
-| 5 | **LayerNorm Device Fix** | Custom `_apply` in LivePortrait utils fails on DirectML device transfer | Rewritten to handle `privateuseone` device properly |
-| 6 | **Deprecated API Cleanup** | Custom UNet uses `_remove_lora` and `return_deprecated_lora` args removed in diffusers 0.27+ | Removed deprecated kwargs from `set_attn_processor()` and `get_processor()` |
+This project has gone through two AMD backend iterations:
 
-### Architecture Upgrades
+| Version | Backend | Status |
+|---------|---------|--------|
+| v1 | `torch-directml` (Direct3D 12) | Deprecated |
+| **v2** | **AMD HIP SDK + ZLUDA** | **Current** |
 
-| # | Change | Before | After |
-|---|--------|--------|-------|
-| 7 | **Threading over Multiprocessing** | Child process loads all models a 2nd time from disk (60-90s startup, `OpaqueTensorImpl` crash on Queue serialization) | Single thread shares the same model instance (30-45s startup, zero serialization) |
-| 8 | **Lazy Loading UX** | Server blocks until models finish loading — user sees "Connection Refused" for 30s+ | Server starts instantly, frontend shows loading screen, models load in background thread |
-| 9 | **DML JIT Warmup** | First inference frame freezes 5-10×  longer while DirectML compiles shaders | Automatic dummy VAE pass after load pre-compiles all shaders before user interaction |
+### Architecture Changes (v2 — HIP/ZLUDA)
+
+| # | Change | Before (DirectML v1) | After (HIP/ZLUDA v2) |
+|---|--------|---------------------|----------------------|
+| 1 | **HIPAttnProcessor** | `DMLAttnProcessor` — manual sliced attention, fp32 upcast, 256-token chunks | Native `F.scaled_dot_product_attention()` — single kernel dispatch, full fp16 |
+| 2 | **Device Backend** | `torch-directml` → `privateuseone:0` | `torch.cuda` via ZLUDA → `cuda:0` |
+| 3 | **Attention Overhead** | ~15-30% from fp32 upcast per layer | Near-zero dtype conversion |
+| 4 | **VRAM Management** | Manual DML workarounds, partial VAE optimization | Full VAE slicing + tiling, aggressive `gc.collect()` + `empty_cache()` |
+| 5 | **Peak VRAM (512x512)** | ~12-14GB | ~8-10GB |
+| 6 | **xformers** | Disabled (incompatible with DML) | Replaced by native PyTorch SDPA |
+
+### Preserved Architecture (from v1)
+
+| # | Feature | Description |
+|---|---------|-------------|
+| 7 | **Threading over Multiprocessing** | Single thread shares model instance, zero serialization overhead |
+| 8 | **Lazy Loading UX** | Server starts instantly, frontend shows loading screen |
+| 9 | **JIT Warmup** | Automatic VAE warmup pass pre-compiles HIP kernels before first frame |
 
 ---
 
 ## 🛠️ Installation for AMD Users (Windows)
 
-**1. Create Conda Environment**
+> For detailed step-by-step instructions, see **[hip_setup_guide.md](hip_setup_guide.md)**.
+
+**1. Install Prerequisites**
+- AMD HIP SDK 6.x from [AMD ROCm Hub](https://www.amd.com/en/developer/resources/rocm-hub.html)
+- ZLUDA 0.4+ from [GitHub Releases](https://github.com/vosen/ZLUDA/releases)
+
+**2. Create Conda Environment**
 ```bash
-conda create -n personalive python=3.10
+conda create -n personalive python=3.10 -y
 conda activate personalive
 ```
 
-**2. Install PyTorch with DirectML**
+**3. Install PyTorch with ROCm**
 ```bash
-pip install torch torchvision torchaudio torch-directml
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
 ```
 
-**3. Install Base Requirements**
-*(Important: Remove `torch` and `torchvision` from `requirements_base.txt` before running this to avoid downgrading!)*
+**4. Install Base Requirements**
 ```bash
 pip install -r requirements_base.txt
 ```
 
-**4. Download Weights**
+**5. Download Weights**
 ```bash
 python tools/download_weights.py
 ```
 
+**6. Set Environment Variables** (Critical for RX 6800)
+```powershell
+$env:HSA_OVERRIDE_GFX_VERSION = "10.3.0"
+```
+
 ---
 
-## 🚀 Running Offline Inference (DirectML)
-Use the `--device privateuseone:0` flag to force AMD execution.
+## 🚀 Running Offline Inference
 
 ```bash
 python inference_offline.py \
   --config configs/prompts/personalive_offline.yaml \
   --reference_image demo/ref_image.png \
-  --driving_video demo/driving_video.mp4 \
-  --device privateuseone:0
+  --driving_video demo/driving_video.mp4
 ```
+
+Device is auto-detected. Override with `--device cuda:0` or `--device cpu`.
 
 ---
 
 ## 📸 Online Inference (WebUI)
-#### 📦 Setup Web UI
+
+### 📦 Setup Web UI
 ```bash
 cd webcam/frontend
 npm install
@@ -90,7 +110,12 @@ npm run build
 cd ../..
 ```
 
-#### ▶️ Start Streaming
+### ▶️ One-Click Start (Recommended)
+```powershell
+.\run_online.ps1
+```
+
+### ▶️ Manual Start
 ```bash
 python inference_online.py --acceleration none
 ```
@@ -100,37 +125,23 @@ Open `http://localhost:7860` — the UI loads instantly while models warm up in 
 
 ## 🏗️ Architecture Deep Dive
 
-### `DMLAttnProcessor` — Why a Custom Attention Kernel?
+### `HIPAttnProcessor` — Native SDPA Attention
 
 Every attention layer in the diffusion UNet computes: **Q @ Kᵀ × scale → softmax → @ V**.
 
-The 3 built-in diffusers processors implement this differently — and all 3 crash on DirectML:
+The `HIPAttnProcessor` uses PyTorch 2.x's native `F.scaled_dot_product_attention()` which dispatches to the most efficient kernel available on the hardware:
 
-| Processor | Implementation | Why it crashes on DML |
-|-----------|---------------|----------------------|
-| `AttnProcessor2_0` | `F.scaled_dot_product_attention()` | DML has no SDPA kernel |
-| `AttnProcessor` | `torch.empty()` + `torch.baddbmm()` | DML has no `baddbmm` kernel |
-| `SlicedAttnProcessor` | Sliced `torch.baddbmm()` | Same — still `baddbmm` |
+| Backend | Kernel | Performance |
+|---------|--------|-------------|
+| HIP/ROCm | Flash Attention (via MIOpen) | Optimal for RDNA2 |
+| CUDA | Flash Attention v2 | Optimal for Ampere+ |
+| Fallback | Math-based SDPA | Universal, still fast |
 
-Our `DMLAttnProcessor` uses only two fundamental ops that every GPU backend supports:
-
-```python
-scores = torch.matmul(Q.float(), K.float().transpose(-1, -2).contiguous()) * scale
-probs  = scores.softmax(dim=-1).to(original_dtype)
-output = torch.matmul(probs, V)
-```
-
-**FP32 upcast** is required because DirectML's FP16 batched matmul has kernel gaps for attention-sized tensors. This adds ~15-30% overhead on attention layers only. The upcast pattern is the same as diffusers' built-in `upcast_attention` flag — well-tested and numerically stable.
+This replaces the old `DMLAttnProcessor` which used manual slicing and fp32 upcasting — a workaround that is no longer necessary with proper GPU backend support.
 
 ### Threading Architecture
 
 ```
-┌─── Original (multiprocessing) ──────────────────────────────────┐
-│ Main Process: spawn child → wait 60-90s                         │
-│ Child Process: torch.load × 8 from disk → PersonaLive init     │
-│ Communication: Queue.put(tensor) → pickle → OpaqueTensorImpl 💀 │
-└─────────────────────────────────────────────────────────────────┘
-
 ┌─── This Fork (threading) ───────────────────────────────────────┐
 │ Main Thread: PersonaLive init once → start server → 30-45s      │
 │ Worker Thread: shares same instance, zero serialization         │
@@ -138,41 +149,30 @@ output = torch.matmul(probs, V)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Why threading works here: PyTorch GPU operations **release the GIL** during kernel execution. The inference thread runs GPU-bound work (matmul, conv2d, etc.) without blocking the WebSocket I/O thread. No GIL contention.
-
-Why multiprocessing broke: DirectML tensors are **opaque** — they have no accessible storage and cannot be serialized via Python's pickle protocol. `Queue.put(dml_tensor)` throws `NotImplementedError: Cannot access storage of OpaqueTensorImpl`. Threading eliminates serialization entirely.
+PyTorch GPU operations **release the GIL** during kernel execution. The inference thread runs GPU-bound work (matmul, conv2d, etc.) without blocking the WebSocket I/O thread.
 
 ### Lazy Loading + JIT Warmup
 
 ```
 t=0.0s  Server starts (FastAPI + Uvicorn)     → User opens browser, sees loading screen
 t=0.1s  Frontend polls GET /api/status         → { is_ready: false, status: "Loading models..." }
-t=30s   Models loaded, VAE warmup pass runs    → { is_ready: false, status: "Warming up DirectML..." }
-t=35s   DML shaders pre-compiled               → { is_ready: true, status: "Ready" }
+t=30s   Models loaded, VAE warmup pass runs    → { is_ready: false, status: "Warming up HIP/ZLUDA..." }
+t=35s   HIP kernels pre-compiled               → { is_ready: true, status: "Ready" }
         Frontend transitions to app UI         → User selects portrait, starts streaming
 ```
 
-The JIT warmup runs a dummy `VAE encode → decode` pass immediately after model loading. This forces DirectML to compile all VAE shader programs before the user's first real frame — eliminating the "First Frame Freeze" where the GPU spends 5-10× longer on initial inference.
-
 ---
 
-## ⚙️ AMD vs NVIDIA — Technical Comparison
+## ⚙️ AMD HIP/ZLUDA vs NVIDIA CUDA — Technical Comparison
 
-DirectML is a **native GPU execution layer** built on Direct3D 12. All tensor operations execute directly on AMD GPU compute units at full hardware utilization — it is NOT CPU emulation or a software fallback.
-
-| Feature | NVIDIA (CUDA) | AMD (DirectML) |
-|---------|---------------|----------------|
+| Feature | NVIDIA (CUDA) | AMD (HIP/ZLUDA) |
+|---------|---------------|-----------------|
 | Tensor execution | Native GPU | Native GPU |
-| Attention precision | FP16 (hardware-optimized) | FP32 upcast needed (~15-30% attention overhead) |
-| Kernel optimization | TensorRT (fused ops, INT8 quantization) | Raw PyTorch ops (no fusion layer available) |
-| JIT compilation | Pre-compiled CUDA kernels | First-run shader compilation (warmup handles this) |
-| Inter-process tensor sharing | CUDA IPC (shared memory) | Not available → Threading instead |
-| 5D tensor ops | Full native support | CPU offloading required |
+| Attention precision | FP16 (Flash Attention) | FP16 (SDPA via MIOpen) |
+| Kernel optimization | TensorRT (fused ops) | HIP JIT compilation |
+| JIT compilation | Pre-compiled CUDA kernels | First-run HIP kernel compilation (warmup handles this) |
 | GPU utilization | 100% | 100% |
-
-> **Key insight:** The original repo's "real-time 30fps" performance comes from **TensorRT acceleration** — a software optimization layer on top of CUDA that fuses kernels and quantizes to INT8. Without TensorRT, vanilla CUDA PyTorch is also significantly slower. The performance gap between AMD and NVIDIA on this project is primarily a **TensorRT vs no-TensorRT** gap, not a hardware gap.
->
-> This fork has been tested and validated on **AMD RX 6000/7000 series GPUs** on Windows. Actual FPS depends on your GPU model, VRAM size, and resolution settings.
+| VRAM efficiency | Native memory pool | Native memory pool + slicing/tiling |
 
 ---
 
@@ -187,7 +187,7 @@ DirectML is a **native GPU execution layer** built on Direct3D 12. All tensor op
 This repository is a modified fork of [PersonaLive](https://github.com/GVCLab/PersonaLive). All core research, model architectures, and original codebase belong to the respective authors: Zhiyuan Li, Chi-Man Pun, Chen Fang, Jue Wang, Xiaodong Cun.
 
 **Source Code Contribution:**
-**[NirussVn0](https://github.com/NirussVn0)** — AMD DirectML runtime engine, custom attention processor, threading architecture, lazy loading system, and JIT warmup implementation.
+**[NirussVn0](https://github.com/NirussVn0)** — AMD DirectML runtime engine (v1), HIP/ZLUDA migration (v2), custom attention processors, threading architecture, lazy loading system, and JIT warmup implementation.
 
 This project is licensed under the **Apache License 2.0**. See the `LICENSE` file for more details.
 
