@@ -10,7 +10,7 @@
 param(
     [string]$CondaEnv = "personalive",
     [int]$DefaultPort = 7860,
-    [string]$Host = "0.0.0.0",
+    [string]$BindAddress = "0.0.0.0",
     [string]$ConfigPath = "./configs/prompts/personalive_online.yaml"
 )
 
@@ -190,7 +190,7 @@ $browserJob = Start-Job -ScriptBlock {
 } -ArgumentList $port
 
 try {
-    python inference_online.py --port $port --host $Host --config_path $ConfigPath --acceleration none
+    python inference_online.py --port $port --host $BindAddress --config_path $ConfigPath --acceleration none
 }
 catch {
     Write-Failure "Server process terminated: $_"
