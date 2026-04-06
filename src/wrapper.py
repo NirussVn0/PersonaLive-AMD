@@ -66,22 +66,35 @@ class DMLAttnProcessor:
 
         inner_dtype = query.dtype
         
-        # [SENIOR FIX] DirectML 'bmm/matmul' kernels crash with "The parameter is incorrect" 
-        # when tensors have non-standard strides (e.g. originating from torch.cat or repeat 
-        # in mutual_self_attention.py). 
-        # We MUST force a fresh, fully contiguous memory allocation before computation.
         q = query.clone().to(torch.float32).contiguous()
         k = key.clone().to(torch.float32).transpose(-1, -2).contiguous()
         v = value.clone().contiguous()
 
-        attention_scores = torch.matmul(q, k) * attn.scale
+        batch_size, n_tokens, dim = q.shape
+        slice_size = 256 # Limits intermediate DML matrix size to ~1GB (Safe for 8GB VRAM cards)
+        
+        hidden_states = torch.zeros(batch_size, n_tokens, v.shape[-1], device=query.device, dtype=inner_dtype)
 
-        if attention_mask is not None:
-            attention_scores = attention_scores + attention_mask.to(torch.float32).contiguous()
-
-        attention_probs = attention_scores.softmax(dim=-1).to(inner_dtype).contiguous()
-
-        hidden_states = torch.matmul(attention_probs, v)
+        for i in range(0, n_tokens, slice_size):
+            end = min(n_tokens, i + slice_size)
+            q_slice = q[:, i:end, :]
+            
+            # [B, slice, D] @ [B, D, M] -> [B, slice, M]
+            attn_slice = torch.bmm(q_slice, k) * attn.scale
+            
+            if attention_mask is not None:
+                mask_len = attention_mask.shape[-2]
+                if mask_len == n_tokens:
+                    mask_slice = attention_mask[..., i:end, :]
+                else: 
+                    mask_slice = attention_mask
+                attn_slice = attn_slice + mask_slice.to(torch.float32).contiguous()
+                
+            probs_slice = attn_slice.softmax(dim=-1).to(inner_dtype).contiguous()
+            
+            # [B, slice, M] @ [B, M, D] -> [B, slice, D]
+            out_slice = torch.bmm(probs_slice, v)
+            hidden_states[:, i:end, :] = out_slice
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
         hidden_states = attn.to_out[0](hidden_states)
