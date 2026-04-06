@@ -65,16 +65,23 @@ class DMLAttnProcessor:
         value = attn.head_to_batch_dim(value)
 
         inner_dtype = query.dtype
-        attention_scores = torch.matmul(
-            query.float(), key.float().transpose(-1, -2).contiguous()
-        ) * attn.scale
+        
+        # [SENIOR FIX] DirectML 'bmm/matmul' kernels crash with "The parameter is incorrect" 
+        # when tensors have non-standard strides (e.g. originating from torch.cat or repeat 
+        # in mutual_self_attention.py). 
+        # We MUST force a fresh, fully contiguous memory allocation before computation.
+        q = query.clone().to(torch.float32).contiguous()
+        k = key.clone().to(torch.float32).transpose(-1, -2).contiguous()
+        v = value.clone().contiguous()
+
+        attention_scores = torch.matmul(q, k) * attn.scale
 
         if attention_mask is not None:
-            attention_scores = attention_scores + attention_mask.float()
+            attention_scores = attention_scores + attention_mask.to(torch.float32).contiguous()
 
-        attention_probs = attention_scores.softmax(dim=-1).to(inner_dtype)
+        attention_probs = attention_scores.softmax(dim=-1).to(inner_dtype).contiguous()
 
-        hidden_states = torch.matmul(attention_probs, value)
+        hidden_states = torch.matmul(attention_probs, v)
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
         hidden_states = attn.to_out[0](hidden_states)

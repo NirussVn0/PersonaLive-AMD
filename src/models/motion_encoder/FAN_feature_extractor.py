@@ -97,7 +97,12 @@ class HourGlass(nn.Module):
         low3 = self._modules['b3_' + str(level)](low3)
         up1size = up1.size()
         rescale_size = (up1size[2], up1size[3])
-        up2 = F.upsample(low3, size=rescale_size, mode='bilinear')
+        up2 = F.interpolate(low3, size=rescale_size, mode='bilinear', align_corners=False)
+        low2 = self.num2[0](self.num2[1](low2))
+        low2 = low2 + up2
+        low2 = self.num2[2](low2)
+
+        up1 = F.interpolate(low2, size=rescale_size, mode='bilinear', align_corners=False)
 
         return up1 + up2
 
