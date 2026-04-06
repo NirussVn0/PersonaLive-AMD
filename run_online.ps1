@@ -116,8 +116,13 @@ function Set-HipEnvironment {
 function Activate-CondaEnvironment {
     param([string]$EnvName)
 
-    $condaExe = Get-Command conda -ErrorAction SilentlyContinue
-    if ($null -eq $condaExe) {
+    $condaPath = $null
+    $condaCmd = Get-Command conda -ErrorAction SilentlyContinue
+    if ($null -ne $condaCmd) {
+        $condaPath = $condaCmd.Source
+    }
+
+    if ([string]::IsNullOrEmpty($condaPath)) {
         $condaPaths = @(
             "$env:USERPROFILE\miniconda3\Scripts\conda.exe",
             "$env:USERPROFILE\anaconda3\Scripts\conda.exe",
@@ -126,24 +131,27 @@ function Activate-CondaEnvironment {
         )
         foreach ($path in $condaPaths) {
             if (Test-Path $path) {
-                $condaExe = $path
+                $condaPath = $path
                 break
             }
         }
     }
 
-    if ($null -ne $condaExe) {
-        $condaRoot = Split-Path -Parent (Split-Path -Parent $condaExe)
-        $hookScript = Join-Path $condaRoot "shell" "condabin" "conda-hook.ps1"
-        if (Test-Path $hookScript) {
-            & $hookScript
+    if (-not [string]::IsNullOrEmpty($condaPath)) {
+        $scriptsDir = Split-Path -Parent $condaPath
+        $condaRoot = Split-Path -Parent $scriptsDir
+        if (-not [string]::IsNullOrEmpty($condaRoot)) {
+            $hookScript = Join-Path (Join-Path (Join-Path $condaRoot "shell") "condabin") "conda-hook.ps1"
+            if (Test-Path $hookScript) {
+                & $hookScript
+            }
         }
         conda activate $EnvName 2>$null
         Write-Status "Conda environment '$EnvName' activated" "Green"
         return
     }
 
-    $venvPath = Join-Path $ScriptRoot "venv" "Scripts" "Activate.ps1"
+    $venvPath = Join-Path (Join-Path (Join-Path $ScriptRoot "venv") "Scripts") "Activate.ps1"
     if (Test-Path $venvPath) {
         & $venvPath
         Write-Status "Virtual environment activated" "Green"
