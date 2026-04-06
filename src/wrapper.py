@@ -212,7 +212,7 @@ class PersonaLive:
             torch.cuda.empty_cache()
 
         try:
-            self.enable_attention_slicing()
+            pass # Attention slicing is intentionally disabled for DMLAttnProcessor compatibility
         except Exception as e:
             print("Failed to enable Attention Slicing:", e)
     
@@ -227,9 +227,7 @@ class PersonaLive:
         self.reference_control_writer.clear()
         self.reference_control_reader.clear()
 
-    def enable_attention_slicing(self):
-        self.reference_unet.enable_attention_slicing(1)
-        self.denoising_unet.enable_attention_slicing(1)
+
 
     def fast_resize(self, images, target_width, target_height) -> torch.Tensor:
         tgt_cond_tensor = F.interpolate(
