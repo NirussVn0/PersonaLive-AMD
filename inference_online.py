@@ -22,7 +22,7 @@ import torch
 from webcam.config import config, Args
 from webcam.util import pil_to_frame, bytes_to_pil, is_firefox, bytes_to_tensor
 from webcam.connection_manager import ConnectionManager, ServerFullException
-import multiprocessing as mp
+
 
 mimetypes.add_type("application/javascript", ".js")
 
@@ -194,6 +194,13 @@ class App:
             queue_size = self.conn_manager.get_user_count()
             return JSONResponse({"queue_size": queue_size})
 
+        @self.app.get("/api/status")
+        async def get_status():
+            return JSONResponse({
+                "is_ready": self.pipeline.is_ready,
+                "status": self.pipeline.loading_status,
+            })
+
         @self.app.get("/api/settings")
         async def settings():
             info_schema = pipeline.Info.schema()
@@ -213,6 +220,8 @@ class App:
         
         @self.app.post("/api/upload_reference_image")
         async def upload_reference_image(ref_image: UploadFile = File(...)):
+            if not self.pipeline.is_ready:
+                raise HTTPException(status_code=503, detail="Pipeline is still loading, please wait")
             try:
                 data = await ref_image.read()
                 img = bytes_to_pil(data)
@@ -289,7 +298,6 @@ if __name__ == "__main__":
     import uvicorn
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    mp.set_start_method("spawn", force=True)
 
     try:
         import torch_directml
